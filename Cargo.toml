@@ -8,10 +8,14 @@ edition = "2021"
 [dependencies]
 nannou = "0.19.0"
 nannou_egui = "0.19.0"
+tokio = "1.36.0"
 
 [lib]
 name = "redacted"
 path = "src/lib.rs"
+
+[dev-dependencies]
+futures = "0.3"
 
 [[example]]
 name = "simple_gui"
@@ -20,3 +24,7 @@ path = "src/examples/simple_gui.rs"
 [[example]]
 name = "wgpu_image"
 path = "src/examples/wgpu_image.rs"
+
+[[example]]
+name = "wgpu_compute_shaders"
+path = "src/examples/wgpu_compute_shaders.rs"

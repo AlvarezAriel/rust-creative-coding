@@ -6,8 +6,10 @@ version = 3
 name = "CreativeCoding"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "nannou",
  "nannou_egui",
+ "tokio",
 ]
 
 [[package]]
