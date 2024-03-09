@@ -37,7 +37,7 @@ const VERTICES: [Vertex; 4] = [
 
 fn model(app: &App) -> Model {
     // Load the image.
-    let logo_path = app.assets_path().unwrap().join("imagen.jpg");
+    let logo_path = app.assets_path().unwrap().join("prado.jpg");
     let image = image::open(logo_path).unwrap();
     let (img_w, img_h) = image.dimensions();
 
