@@ -11,11 +11,12 @@ nannou_egui = "0.19.0"
 tokio = "1.36.0"
 
 [lib]
-name = "redacted"
+name = "lib"
 path = "src/lib.rs"
 
 [dev-dependencies]
 futures = "0.3"
+
 
 [[example]]
 name = "simple_gui"
