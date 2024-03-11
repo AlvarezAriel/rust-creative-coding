@@ -3,9 +3,9 @@ use nannou::{Frame, wgpu};
 use nannou::image::DynamicImage;
 use nannou::prelude::{BufferInitDescriptor, DeviceExt, Window};
 use nannou::wgpu::ShaderModuleDescriptor;
-use crate::shader_processing::model::{QUAD, ShaderModel, Vert};
+use crate::shader_processing::model::{ConvolutionUniform, QUAD, ShaderModel, Vert};
 
-pub fn init_shader(image: &DynamicImage, window: &Ref<Window>, fs_desc: ShaderModuleDescriptor) -> ShaderModel {
+pub fn init_shader(image: &DynamicImage, window: &Ref<Window>, fs_desc: ShaderModuleDescriptor, convolution: [f32; 16]) -> ShaderModel {
     let device = window.device();
     let format = Frame::TEXTURE_FORMAT;
     let msaa_samples = window.msaa_samples();
@@ -25,17 +25,67 @@ pub fn init_shader(image: &DynamicImage, window: &Ref<Window>, fs_desc: ShaderMo
     let sampler = device.create_sampler(&sampler_desc);
 
     let bind_group_layout =
-        create_bind_group_layout(device, texture_view.sample_type(), sampler_filtering);
-    let bind_group = create_bind_group(device, &bind_group_layout, &texture_view, &sampler);
-    let pipeline_layout = create_pipeline_layout(device, &bind_group_layout);
-    let render_pipeline = create_render_pipeline(
-        device,
-        &pipeline_layout,
-        &vs_mod,
-        &fs_mod,
-        format,
-        msaa_samples,
+        wgpu::BindGroupLayoutBuilder::new()
+            .texture(
+                wgpu::ShaderStages::FRAGMENT,
+                false,
+                wgpu::TextureViewDimension::D2,
+                texture_view.sample_type(),
+            )
+            .sampler(wgpu::ShaderStages::FRAGMENT, sampler_filtering)
+            .build(device);
+
+    let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }
+        ],
+        label: Some("uniform_bind_group_layout"),
+    });
+
+    let convolution_uniform = ConvolutionUniform {
+        convolution
+    };
+
+    let convolution_uniform_buffer = device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("Convolution Matrix Buffer"),
+            contents: bytemuck::cast_slice(&[convolution_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        }
     );
+
+    let bind_group = wgpu::BindGroupBuilder::new()
+        .texture_view(&texture_view)
+        .sampler(&sampler)
+        .build(device, &bind_group_layout);
+
+    let uniform_bind_group = wgpu::BindGroupBuilder::new()
+        .binding(wgpu::BindingResource::Buffer(convolution_uniform_buffer.as_entire_buffer_binding()))
+        .build(device, &uniform_bind_group_layout);
+
+    let desc = wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[&bind_group_layout, &uniform_bind_group_layout],
+        push_constant_ranges: &[],
+    };
+    let pipeline_layout = device.create_pipeline_layout(&desc);
+
+    let render_pipeline = wgpu::RenderPipelineBuilder::from_layout(&pipeline_layout, &vs_mod)
+        .fragment_shader(&fs_mod)
+        .color_format(format)
+        .add_vertex_buffer::<Vert>(&wgpu::vertex_attr_array![0 => Float32x2])
+        .sample_count(msaa_samples)
+        .primitive_topology(wgpu::PrimitiveTopology::TriangleStrip)
+        .build(device);
 
     let vertices_bytes = vertices_as_bytes(&QUAD[..]);
     let usage = wgpu::BufferUsages::VERTEX;
@@ -47,8 +97,10 @@ pub fn init_shader(image: &DynamicImage, window: &Ref<Window>, fs_desc: ShaderMo
 
     ShaderModel {
         bind_group,
+        uniform_bind_group,
         vertex_buffer,
         render_pipeline,
+        convolution_uniform,
     }
 }
 
@@ -58,70 +110,13 @@ pub fn wgpu_render_pass(frame: Frame, shader_model: &ShaderModel) {
         .color_attachment(frame.texture_view(), |color| color)
         .begin(&mut encoder);
     render_pass.set_bind_group(0, &shader_model.bind_group, &[]);
+    render_pass.set_bind_group(1, &shader_model.uniform_bind_group, &[]);
     render_pass.set_pipeline(&shader_model.render_pipeline);
     render_pass.set_vertex_buffer(0, shader_model.vertex_buffer.slice(..));
     let vertex_range = 0..QUAD.len() as u32;
     let instance_range = 0..1;
     render_pass.draw(vertex_range, instance_range);
 }
-
-fn create_bind_group_layout(
-    device: &wgpu::Device,
-    texture_sample_type: wgpu::TextureSampleType,
-    sampler_filtering: bool,
-) -> wgpu::BindGroupLayout {
-    wgpu::BindGroupLayoutBuilder::new()
-        .texture(
-            wgpu::ShaderStages::FRAGMENT,
-            false,
-            wgpu::TextureViewDimension::D2,
-            texture_sample_type,
-        )
-        .sampler(wgpu::ShaderStages::FRAGMENT, sampler_filtering)
-        .build(device)
-}
-
-fn create_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    texture: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
-) -> wgpu::BindGroup {
-    wgpu::BindGroupBuilder::new()
-        .texture_view(texture)
-        .sampler(sampler)
-        .build(device, layout)
-}
-
-fn create_pipeline_layout(
-    device: &wgpu::Device,
-    bind_group_layout: &wgpu::BindGroupLayout,
-) -> wgpu::PipelineLayout {
-    let desc = wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[&bind_group_layout],
-        push_constant_ranges: &[],
-    };
-    device.create_pipeline_layout(&desc)
-}
-
-fn create_render_pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    vs_mod: &wgpu::ShaderModule,
-    fs_mod: &wgpu::ShaderModule,
-    dst_format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> wgpu::RenderPipeline {
-    wgpu::RenderPipelineBuilder::from_layout(layout, vs_mod)
-        .fragment_shader(fs_mod)
-        .color_format(dst_format)
-        .add_vertex_buffer::<Vert>(&wgpu::vertex_attr_array![0 => Float32x2])
-        .sample_count(sample_count)
-        .primitive_topology(wgpu::PrimitiveTopology::TriangleStrip)
-        .build(device)
-}
-
 
 // See the `nannou::wgpu::bytes` documentation for why this is necessary.
 fn vertices_as_bytes(data: &[Vert]) -> &[u8] {

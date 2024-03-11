@@ -2,7 +2,7 @@ use nannou::image;
 use nannou::image::GenericImageView;
 use nannou::prelude::*;
 
-use lib::shader_processing::model::ShaderModel;
+use lib::shader_processing::model::{ShaderModel};
 use lib::shader_processing::pipeline::{init_shader, wgpu_render_pass};
 
 fn main() {
@@ -12,6 +12,13 @@ fn main() {
 struct Model {
     shader_model: ShaderModel,
 }
+
+const IDENTITY_CONVOLUTION: [f32; 16] = [
+    0.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0,
+];
 
 fn initialize(app: &App) -> Model {
     // Load the image.
@@ -28,7 +35,7 @@ fn initialize(app: &App) -> Model {
     let window = app.window(w_id).unwrap();
 
     let fs_desc = wgpu::include_wgsl!("shaders/fs.wgsl");
-    let shader_model = init_shader(&image, &window, fs_desc);
+    let shader_model = init_shader(&image, &window, fs_desc, IDENTITY_CONVOLUTION);
 
     Model {
         shader_model

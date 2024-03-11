@@ -9,6 +9,7 @@ edition = "2021"
 nannou = "0.19.0"
 nannou_egui = "0.19.0"
 tokio = "1.36.0"
+bytemuck = "1.14.3"
 
 [lib]
 name = "lib"
