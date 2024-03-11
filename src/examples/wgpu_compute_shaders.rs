@@ -8,6 +8,7 @@
 use nannou::prelude::*;
 use nannou::wgpu::BufferInitDescriptor;
 use std::sync::{Arc, Mutex};
+use nannou::image;
 
 fn main() {
     nannou::app(model).update(update).run();
@@ -41,6 +42,29 @@ fn model(app: &App) -> Model {
     let window = app.window(w_id).unwrap();
     let device = window.device();
 
+    // INPUT TEXTURE
+    let texture_path_buffer = app.assets_path().unwrap().join("prado.jpg");
+    let image = image::open(texture_path_buffer).unwrap();
+    let texture = wgpu::Texture::from_image(&window, &image);
+    let texture_view = texture.view().build();
+
+    //OUTPUT TEXTURE
+    let storage_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: texture.width(),
+            height: texture.height(),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let storage_texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
     // Create the compute shader module.
     let cs_desc = wgpu::include_wgsl!("shaders/cs.wgsl");
     let cs_mod = device.create_shader_module(cs_desc);
@@ -68,14 +92,38 @@ fn model(app: &App) -> Model {
     });
 
     // Create the bind group and pipeline.
-    let bind_group_layout = create_bind_group_layout(device);
-    let bind_group = create_bind_group(
-        device,
-        &bind_group_layout,
-        &oscillator_buffer,
-        oscillator_buffer_size,
-        &uniform_buffer,
-    );
+    let storage_dynamic = false;
+    let storage_readonly = false;
+    let uniform_dynamic = false;
+    let bind_group_layout = wgpu::BindGroupLayoutBuilder::new()
+        .storage_buffer(
+            wgpu::ShaderStages::COMPUTE,
+            storage_dynamic,
+            storage_readonly,
+        )
+        .uniform_buffer(wgpu::ShaderStages::COMPUTE, uniform_dynamic)
+        .texture(
+            wgpu::ShaderStages::COMPUTE,
+            false,
+            wgpu::TextureViewDimension::D2,
+            texture_view.sample_type(),
+        )
+        .storage_texture(
+            wgpu::ShaderStages::COMPUTE,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureViewDimension::D2,
+            wgpu::StorageTextureAccess::WriteOnly,
+        )
+        .build(device);
+
+    let buffer_size_bytes = std::num::NonZeroU64::new(oscillator_buffer_size).unwrap();
+    let bind_group = wgpu::BindGroupBuilder::new()
+        .buffer_bytes(&oscillator_buffer, 0, Some(buffer_size_bytes))
+        .buffer::<Uniforms>(&uniform_buffer, 0..1)
+        .texture_view(&texture_view) // <- Input texture
+        .texture_view(&storage_texture_view)// <- Output texture
+        .build(device, &bind_group_layout);
+
     let pipeline_layout = create_pipeline_layout(device, &bind_group_layout);
     let pipeline = create_compute_pipeline(device, &pipeline_layout, &cs_mod);
 
@@ -220,20 +268,6 @@ fn create_uniforms(time: f32, mouse_x: f32, win_rect: geom::Rect) -> Uniforms {
         freq,
         oscillator_count,
     }
-}
-
-fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    let storage_dynamic = false;
-    let storage_readonly = false;
-    let uniform_dynamic = false;
-    wgpu::BindGroupLayoutBuilder::new()
-        .storage_buffer(
-            wgpu::ShaderStages::COMPUTE,
-            storage_dynamic,
-            storage_readonly,
-        )
-        .uniform_buffer(wgpu::ShaderStages::COMPUTE, uniform_dynamic)
-        .build(device)
 }
 
 fn create_bind_group(
