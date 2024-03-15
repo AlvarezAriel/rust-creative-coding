@@ -11,6 +11,7 @@ use nannou::image;
 use nannou::image::DynamicImage;
 use nannou::prelude::*;
 use nannou::wgpu::{BufferInitDescriptor, Device};
+use nannou_egui::{Egui, egui};
 use nannou_egui::egui_wgpu::wgpu::TextureView;
 
 use lib::shader_processing::model::{QUAD, Vert};
@@ -22,6 +23,20 @@ fn main() {
 struct Model {
     compute: Compute,
     render: Render,
+    gui: Gui,
+}
+
+struct Gui {
+    egui: Egui,
+    settings: Settings,
+}
+
+struct Settings {
+    resolution: u32,
+    scale: f32,
+    accentuate: f32,
+    color: Srgb<u8>,
+    position: Vec2,
 }
 
 struct Compute {
@@ -40,11 +55,17 @@ struct Render {
 #[derive(Copy, Clone)]
 pub struct Uniforms {
     time: f32,
-    freq: f32,
+    accentuate: f32,
 }
 
 fn model(app: &App) -> Model {
-    let w_id = app.new_window().size(1024, 1024).view(view).build().unwrap();
+    let w_id = app.new_window()
+        .size(1024, 1024)
+        .view(view)
+        .raw_event(raw_window_event)
+        .build()
+        .unwrap();
+    
     let window = app.window(w_id).unwrap();
     let device = window.device();
 
@@ -74,22 +95,38 @@ fn model(app: &App) -> Model {
     let storage_texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     let compute = build_compute_pipeline(app, &window, device, &texture_view, &storage_texture_view);
-    let render = build_render_pipeline(&window, device, &image, &storage_texture_view);
-
+    let render = build_render_pipeline(&window, device, &storage_texture_view);
+    let gui = build_gui_state(&window);
+    
     Model {
         compute,
         render,
+        gui,
     }
+}
+
+fn build_gui_state(window: &Ref<Window>) -> Gui {
+    let egui = Egui::from_window(&window);
+    let gui = Gui {
+        egui,
+        settings: Settings {
+            resolution: 10,
+            scale: 200.0,
+            accentuate: 0.0,
+            color: WHITE,
+            position: vec2(0.0, 0.0),
+        }
+    };
+    gui
 }
 
 fn build_compute_pipeline(app: &App, window: &Ref<Window>, device: &Device, texture_view: &TextureView, storage_texture_view: &TextureView) -> Compute {
 // Create the compute shader module.
     let cs_desc = wgpu::include_wgsl!("shaders/cs.wgsl");
     let cs_mod = device.create_shader_module(cs_desc);
-
-
+    
     // Create the buffer that will store time.
-    let uniforms = create_uniforms(app.time, app.mouse.x, window.rect());
+    let uniforms = create_uniforms(app.time, 1f32);
     let uniforms_bytes = uniforms_as_bytes(&uniforms);
     let usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
     let uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
@@ -133,7 +170,7 @@ fn build_compute_pipeline(app: &App, window: &Ref<Window>, device: &Device, text
     compute
 }
 
-fn build_render_pipeline(window: &Ref<Window>, device: &Device, image: &DynamicImage, storage_texture_view: &TextureView) -> Render {
+fn build_render_pipeline(window: &Ref<Window>, device: &Device, storage_texture_view: &TextureView) -> Render {
     let format = Frame::TEXTURE_FORMAT;
     let msaa_samples = window.msaa_samples();
     let vs_desc = wgpu::include_wgsl!("shaders/vs.wgsl");
@@ -197,13 +234,47 @@ fn build_render_pipeline(window: &Ref<Window>, device: &Device, image: &DynamicI
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
-    // Update UI and Uniforms
+    let egui = &mut model.gui.egui;
+    let settings = &mut model.gui.settings;
+
+    egui.set_elapsed_time(_update.since_start);
+    let ctx = egui.begin_frame();
+
+    egui::Window::new("Settings").show(&ctx, |ui| {
+        // Resolution slider
+        ui.label("Resolution:");
+        ui.add(egui::Slider::new(&mut settings.resolution, 1..=40));
+
+        // Scale slider
+        ui.label("Scale:");
+        ui.add(egui::Slider::new(&mut settings.scale, 0.0..=1000.0));
+
+        // Rotation slider
+        ui.label("Accentuate:");
+        ui.add(egui::Slider::new(&mut settings.accentuate, 1.0..=20.0));
+
+        // Random color button
+        let clicked = ui.button("Random color").clicked();
+
+        if clicked {
+            settings.color = rgb(random(), random(), random());
+        }
+    });
 }
+
+fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
+    // Let egui handle things like keyboard and mouse input.
+    model.gui.egui.handle_raw_event(event);
+}
+
 
 fn view(app: &App, model: &Model, frame: Frame) {
     frame.clear(BLACK);
-    compute_pass(app, &model, &frame);
-    render_pass(&model, frame);
+    {
+        compute_pass(app, &model, &frame);
+        render_pass(&model, &frame);
+    }
+    model.gui.egui.draw_to_frame(&frame).unwrap();
 }
 
 fn compute_pass(app: &App, model: &&Model, frame: &Frame) {
@@ -213,7 +284,7 @@ fn compute_pass(app: &App, model: &&Model, frame: &Frame) {
     let compute = &model.compute;
 
     // An update for the uniform buffer with the current time.
-    let uniforms = create_uniforms(app.time, app.mouse.x, win_rect);
+    let uniforms = create_uniforms(app.time, model.gui.settings.accentuate);
     let uniforms_size = std::mem::size_of::<Uniforms>() as wgpu::BufferAddress;
     let uniforms_bytes = uniforms_as_bytes(&uniforms);
     let usage = wgpu::BufferUsages::COPY_SRC;
@@ -249,7 +320,7 @@ fn compute_pass(app: &App, model: &&Model, frame: &Frame) {
     window.queue().submit(Some(encoder.finish()));
 }
 
-fn render_pass(model: &&Model, frame: Frame) {
+fn render_pass(model: &&Model, frame: &Frame) {
     let shader_model = &model.render;
     //draw.to_frame(app, &frame).unwrap();
     let mut encoder = frame.command_encoder();
@@ -264,17 +335,11 @@ fn render_pass(model: &&Model, frame: Frame) {
     render_pass.draw(vertex_range, instance_range);
 }
 
-fn create_uniforms(time: f32, mouse_x: f32, win_rect: geom::Rect) -> Uniforms {
-    let freq = map_range(
-        mouse_x,
-        win_rect.left(),
-        win_rect.right(),
-        0.0,
-        win_rect.w(),
-    );
+fn create_uniforms(time: f32, accentuate: f32) -> Uniforms {
+
     Uniforms {
         time,
-        freq,
+        accentuate,
     }
 }
 

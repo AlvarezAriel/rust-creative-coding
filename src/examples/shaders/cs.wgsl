@@ -1,7 +1,6 @@
 struct Uniforms {
     time: f32,
-    freq: f32,
-    oscillator_count: u32,
+    accentuate: f32,
 };
 
 @group(0) @binding(0)
@@ -64,7 +63,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let gA =  colorA / accumA;
     let gB =  colorB / accumB;
     let diff = gB - gA;
-    let distance = diff * 10.;
+    let distance = diff * uniforms.accentuate;
 
     textureStore(outTexture, id.xy,  vec4(vec3(distance), 1.0));
 
