@@ -41,10 +41,7 @@ struct Render {
 pub struct Uniforms {
     time: f32,
     freq: f32,
-    oscillator_count: u32,
 }
-
-const OSCILLATOR_COUNT: u32 = 128;
 
 fn model(app: &App) -> Model {
     let w_id = app.new_window().size(1024, 1024).view(view).build().unwrap();
@@ -275,26 +272,10 @@ fn create_uniforms(time: f32, mouse_x: f32, win_rect: geom::Rect) -> Uniforms {
         0.0,
         win_rect.w(),
     );
-    let oscillator_count = OSCILLATOR_COUNT;
     Uniforms {
         time,
         freq,
-        oscillator_count,
     }
-}
-
-fn create_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    oscillator_buffer: &wgpu::Buffer,
-    oscillator_buffer_size: wgpu::BufferAddress,
-    uniform_buffer: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    let buffer_size_bytes = std::num::NonZeroU64::new(oscillator_buffer_size).unwrap();
-    wgpu::BindGroupBuilder::new()
-        .buffer_bytes(oscillator_buffer, 0, Some(buffer_size_bytes))
-        .buffer::<Uniforms>(uniform_buffer, 0..1)
-        .build(device, layout)
 }
 
 fn create_pipeline_layout(
