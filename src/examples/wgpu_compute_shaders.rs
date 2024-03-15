@@ -5,11 +5,15 @@
 //! with a gray value equal to the amplitude. Real-time interaction is demonstrated by providing
 //! access to time, frequency (mouse `x`) and the number of oscillators via uniform data.
 
-use nannou::prelude::*;
-use nannou::wgpu::BufferInitDescriptor;
-use std::sync::{Arc, Mutex};
+use std::cell::Ref;
+
 use nannou::image;
-use lib::shader_processing::model::{ConvolutionUniform, QUAD, Vert};
+use nannou::image::DynamicImage;
+use nannou::prelude::*;
+use nannou::wgpu::{BufferInitDescriptor, Device};
+use nannou_egui::egui_wgpu::wgpu::TextureView;
+
+use lib::shader_processing::model::{QUAD, Vert};
 
 fn main() {
     nannou::app(model).update(update).run();
@@ -18,12 +22,9 @@ fn main() {
 struct Model {
     compute: Compute,
     render: Render,
-    oscillators: Arc<Mutex<Vec<f32>>>,
 }
 
 struct Compute {
-    oscillator_buffer: wgpu::Buffer,
-    oscillator_buffer_size: wgpu::BufferAddress,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     pipeline: wgpu::ComputePipeline,
@@ -50,13 +51,15 @@ fn model(app: &App) -> Model {
     let window = app.window(w_id).unwrap();
     let device = window.device();
 
-    // INPUT TEXTURE
+    // This texture is the input to our whole workflow, it will be processed in the compute shader
+    // and the result from that
     let texture_path_buffer = app.assets_path().unwrap().join("imagen.jpg");
     let image = image::open(texture_path_buffer).unwrap();
     let texture = wgpu::Texture::from_image(&window, &image);
     let texture_view = texture.view().build();
 
-    //OUTPUT TEXTURE
+    // This texture will be the compute shader's output and the fragment shader's input,
+    // allowing us to render the compute shader's result onto the Window.
     let storage_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -73,26 +76,20 @@ fn model(app: &App) -> Model {
     });
     let storage_texture_view = storage_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+    let compute = build_compute_pipeline(app, &window, device, &texture_view, &storage_texture_view);
+    let render = build_render_pipeline(&window, device, &image, &storage_texture_view);
 
-    //================================================================================================
-    // COMPUTE PIPELINE CREATION
-    //================================================================================================
+    Model {
+        compute,
+        render,
+    }
+}
 
-    // Create the compute shader module.
+fn build_compute_pipeline(app: &App, window: &Ref<Window>, device: &Device, texture_view: &TextureView, storage_texture_view: &TextureView) -> Compute {
+// Create the compute shader module.
     let cs_desc = wgpu::include_wgsl!("shaders/cs.wgsl");
     let cs_mod = device.create_shader_module(cs_desc);
 
-    // Create the buffer that will store the result of our compute operation.
-    let oscillator_buffer_size =
-        (OSCILLATOR_COUNT as usize * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
-    let oscillator_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("oscillators"),
-        size: oscillator_buffer_size,
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
 
     // Create the buffer that will store time.
     let uniforms = create_uniforms(app.time, app.mouse.x, window.rect());
@@ -105,21 +102,14 @@ fn model(app: &App) -> Model {
     });
 
     // Create the bind group and pipeline.
-    let storage_dynamic = false;
-    let storage_readonly = false;
     let uniform_dynamic = false;
     let bind_group_layout = wgpu::BindGroupLayoutBuilder::new()
-        .storage_buffer(
-            wgpu::ShaderStages::COMPUTE,
-            storage_dynamic,
-            storage_readonly,
-        )
         .uniform_buffer(wgpu::ShaderStages::COMPUTE, uniform_dynamic)
         .texture(
             wgpu::ShaderStages::COMPUTE,
             false,
             wgpu::TextureViewDimension::D2,
-            texture_view.sample_type(),
+            wgpu::TextureSampleType::Float { filterable: true },
         )
         .storage_texture(
             wgpu::ShaderStages::COMPUTE,
@@ -129,9 +119,7 @@ fn model(app: &App) -> Model {
         )
         .build(device);
 
-    let buffer_size_bytes = std::num::NonZeroU64::new(oscillator_buffer_size).unwrap();
     let bind_group = wgpu::BindGroupBuilder::new()
-        .buffer_bytes(&oscillator_buffer, 0, Some(buffer_size_bytes))
         .buffer::<Uniforms>(&uniform_buffer, 0..1)
         .texture_view(&texture_view) // <- Input texture
         .texture_view(&storage_texture_view)// <- Output texture
@@ -141,21 +129,14 @@ fn model(app: &App) -> Model {
     let pipeline = create_compute_pipeline(device, &pipeline_layout, &cs_mod);
 
     let compute = Compute {
-        oscillator_buffer,
-        oscillator_buffer_size,
         uniform_buffer,
         bind_group,
         pipeline,
     };
+    compute
+}
 
-    // The vector that we will write oscillator values to.
-    let oscillators = Arc::new(Mutex::new(vec![0.0; OSCILLATOR_COUNT as usize]));
-
-
-    //================================================================================================
-    // RENDER PIPELINE CREATION
-    //================================================================================================
-
+fn build_render_pipeline(window: &Ref<Window>, device: &Device, image: &DynamicImage, storage_texture_view: &TextureView) -> Render {
     let format = Frame::TEXTURE_FORMAT;
     let msaa_samples = window.msaa_samples();
     let vs_desc = wgpu::include_wgsl!("shaders/vs.wgsl");
@@ -163,11 +144,6 @@ fn model(app: &App) -> Model {
 
     let vs_mod = device.create_shader_module(vs_desc);
     let fs_mod = device.create_shader_module(fs_desc);
-
-    // Load the image as a texture.
-    // TODO: replace input texture with compute output
-    let texture = wgpu::Texture::from_image(&window, &image);
-    let texture_view = texture.view().build();
 
     // Create the sampler for sampling from the source texture.
     let sampler_desc = wgpu::SamplerBuilder::new().into_descriptor();
@@ -220,106 +196,24 @@ fn model(app: &App) -> Model {
         render_pipeline,
         vertex_buffer,
     };
-
-    //================================================================================================
-    //================================================================================================
-
-    Model {
-        compute,
-        render,
-        oscillators,
-    }
+    render
 }
 
 fn update(app: &App, model: &mut Model, _update: Update) {
-    // let window = app.main_window();
-    // let device = window.device();
-    // let win_rect = window.rect();
-    // let compute = &mut model.compute;
-    //
-    // // The buffer into which we'll read some data.
-    // let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-    //     label: Some("read-oscillators"),
-    //     size: compute.oscillator_buffer_size,
-    //     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-    //     mapped_at_creation: false,
-    // });
-    //
-    // // An update for the uniform buffer with the current time.
-    // let uniforms = create_uniforms(app.time, app.mouse.x, win_rect);
-    // let uniforms_size = std::mem::size_of::<Uniforms>() as wgpu::BufferAddress;
-    // let uniforms_bytes = uniforms_as_bytes(&uniforms);
-    // let usage = wgpu::BufferUsages::COPY_SRC;
-    // let new_uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
-    //     label: Some("uniform-data-transfer"),
-    //     contents: uniforms_bytes,
-    //     usage,
-    // });
-    //
-    // // The encoder we'll use to encode the compute pass.
-    // let desc = wgpu::CommandEncoderDescriptor {
-    //     label: Some("oscillator-compute"),
-    // };
-    // let mut encoder = device.create_command_encoder(&desc);
-    // encoder.copy_buffer_to_buffer(
-    //     &new_uniform_buffer,
-    //     0,
-    //     &compute.uniform_buffer,
-    //     0,
-    //     uniforms_size,
-    // );
-    // {
-    //     let pass_desc = wgpu::ComputePassDescriptor {
-    //         label: Some("nannou-wgpu_compute_shader-compute_pass"),
-    //     };
-    //     let mut cpass = encoder.begin_compute_pass(&pass_desc);
-    //     cpass.set_pipeline(&compute.pipeline);
-    //     cpass.set_bind_group(0, &compute.bind_group, &[]);
-    //     cpass.dispatch_workgroups(OSCILLATOR_COUNT as u32, 1, 1);
-    // }
-    // encoder.copy_buffer_to_buffer(
-    //     &compute.oscillator_buffer,
-    //     0,
-    //     &read_buffer,
-    //     0,
-    //     compute.oscillator_buffer_size,
-    // );
-    //
-    // // Submit the compute pass to the device's queue.
-    // window.queue().submit(Some(encoder.finish()));
-    //
-
-    // Check for resource cleanups and mapping callbacks.
-    //
-    // Note that this line is not necessary in our case, as the device we are using already gets
-    // polled when nannou submits the command buffer for drawing and presentation after `view`
-    // completes. If we were to use a standalone device to create our buffer and perform our
-    // compute (rather than the device requested during window creation), calling `poll` regularly
-    // would be a must.
-    //
-    // device.poll(false);
+    // Update UI and Uniforms
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
     frame.clear(BLACK);
+    compute_pass(app, &model, &frame);
+    render_pass(&model, frame);
+}
+
+fn compute_pass(app: &App, model: &&Model, frame: &Frame) {
     let window = app.window(frame.window_id()).unwrap();
-
-    ///----------------------------------------------------------------
-    ///----------------------- COMPUTE --------------------------------
-    ///----------------------------------------------------------------
-
-    let window = app.main_window();
     let device = window.device();
     let win_rect = window.rect();
     let compute = &model.compute;
-
-    // The buffer into which we'll read some data.
-    let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("read-oscillators"),
-        size: compute.oscillator_buffer_size,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
 
     // An update for the uniform buffer with the current time.
     let uniforms = create_uniforms(app.time, app.mouse.x, win_rect);
@@ -334,7 +228,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
     // The encoder we'll use to encode the compute pass.
     let desc = wgpu::CommandEncoderDescriptor {
-        label: Some("oscillator-compute"),
+        label: Some("convolution-compute"),
     };
     let mut encoder = device.create_command_encoder(&desc);
     encoder.copy_buffer_to_buffer(
@@ -353,21 +247,12 @@ fn view(app: &App, model: &Model, frame: Frame) {
         cpass.set_bind_group(0, &compute.bind_group, &[]);
         cpass.dispatch_workgroups(1024u32, 1024u32, 1);
     }
-    encoder.copy_buffer_to_buffer(
-        &compute.oscillator_buffer,
-        0,
-        &read_buffer,
-        0,
-        compute.oscillator_buffer_size,
-    );
 
     // Submit the compute pass to the device's queue.
     window.queue().submit(Some(encoder.finish()));
+}
 
-    /// ---------------------------------------------------------------------------------------------
-    ///----------------------- RENDER --------------------------------
-    ///---------------------------------------------------------------------------------------------
-
+fn render_pass(model: &&Model, frame: Frame) {
     let shader_model = &model.render;
     //draw.to_frame(app, &frame).unwrap();
     let mut encoder = frame.command_encoder();

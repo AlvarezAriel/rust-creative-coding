@@ -1,7 +1,3 @@
-struct Buffer {
-    data: array<f32>,
-};
-
 struct Uniforms {
     time: f32,
     freq: f32,
@@ -9,15 +5,12 @@ struct Uniforms {
 };
 
 @group(0) @binding(0)
-var<storage, read_write> output: Buffer;
-
-@group(0) @binding(1)
 var<uniform> uniforms: Uniforms;
 
-@group(0) @binding(2)
+@group(0) @binding(1)
 var inTexture: texture_2d<f32>;
 
-@group(0) @binding(3)
+@group(0) @binding(2)
 var outTexture: texture_storage_2d<rgba8unorm, write>;
 
 @compute @workgroup_size(1, 1, 1)
@@ -47,12 +40,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         vec2(-2., 2.0), vec2(-1., 2.0), vec2(0., 2.0), vec2(1., 2.0), vec2(2., 2.0)
     );
 
-
-    let index: u32 = id.x;
-    let indey: u32 = id.y;
-    let phase: f32 = uniforms.time + f32(index) * uniforms.freq / f32(uniforms.oscillator_count);
-    output.data[index] = sin(phase) * 0.5 + 0.5;
-
     var colorA = 0.0;
     var accumA = 0.0;
 
@@ -61,6 +48,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let lum = vec4(0.375, 0.5, 0.125, 0.);
 
+    // TODO: Use two passes: horizontal and vertical instead of this
     for (var i = 0u; i < 25u; i = i + 1u) {
         let pixel = textureLoad(inTexture, vec2<u32>(vec2<f32>(id.xy) + GAUSSIAN_BLUR_STEPS[i]), 0);
 
